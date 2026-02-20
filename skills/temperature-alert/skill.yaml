@@ -241,9 +241,7 @@ requirements:
   
   python_packages:
     - requests>=2.28.0
-    - smtplib  # Built-in
-    - json     # Built-in
-    - datetime # Built-in
+    # smtplib, json, datetime are Python stdlib — no pip install needed
   
   hardware:
     - description: "Temperature sensor (DS18B20, DHT22, BME280, etc.)"

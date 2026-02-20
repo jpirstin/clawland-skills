@@ -65,19 +65,28 @@ check_dependencies() {
     
     local missing_deps=()
     
-    # Check for basic tools
-    for cmd in python3 pip3 gpio; do
+    # Check for required tools (gpio is optional — only needed for GPIO-wired sensors)
+    for cmd in python3 pip3; do
         if ! command -v $cmd &> /dev/null; then
             missing_deps+=($cmd)
         fi
     done
+    if ! command -v gpio &> /dev/null; then
+        print_warning "gpio utility not found — OK if using USB/I2C sensors or virtual mode"
+    fi
     
-    # Check for picclaw/nanoclaw/microclaw
+    # Check for picclaw/nanoclaw/microclaw/moltclaw
     local claw_found=false
     for claw in picclaw nanoclaw microclaw moltclaw; do
         if command -v $claw &> /dev/null; then
             print_status "Found $claw"
             CLAW_COMMAND=$claw
+            # moltclaw uses 'fleet skill' sub-command; others use 'skill' directly
+            if [[ "$claw" == "moltclaw" ]]; then
+                CLAW_SKILL_CMD="moltclaw fleet"
+            else
+                CLAW_SKILL_CMD="$claw"
+            fi
             claw_found=true
             break
         fi
@@ -150,7 +159,8 @@ detect_sensors() {
     # Check for 1-Wire sensors
     local w1_devices="/sys/bus/w1/devices"
     if [[ -d $w1_devices ]]; then
-        local sensors=($(ls $w1_devices | grep "^28-"))
+        # Use || true so set -e doesn't exit when no 28- devices are present
+        local sensors=($(ls "$w1_devices" 2>/dev/null | grep "^28-" || true))
         
         if [[ ${#sensors[@]} -gt 0 ]]; then
             print_status "Found ${#sensors[@]} DS18B20 sensor(s):"
@@ -158,7 +168,8 @@ detect_sensors() {
                 echo "  - $sensor"
                 # Test reading
                 if cat "$w1_devices/$sensor/w1_slave" 2>/dev/null | grep -q "YES"; then
-                    local temp=$(cat "$w1_devices/$sensor/w1_slave" | grep "t=" | cut -d"t=" -f2)
+                    # cut only accepts single-char delimiter — use '=' not 't='
+                    local temp=$(cat "$w1_devices/$sensor/w1_slave" | grep "t=" | cut -d= -f2)
                     local temp_c=$(echo "scale=3; $temp/1000" | bc 2>/dev/null || echo "N/A")
                     echo "    Temperature: ${temp_c}°C"
                     DETECTED_SENSORS+=("$sensor")
@@ -267,7 +278,7 @@ config:
   rate_threshold: 5.0
   cooldown_minutes: 15
   sensor_id: "$SELECTED_SENSOR"
-  sensor_type: "DS18B20"
+  sensor_type: "${SENSOR_TYPE:-DS18B20}"
 
 notifications:
 EOF
@@ -302,7 +313,7 @@ install_skill() {
     print_step "Installing temperature alert skill..."
     
     if [[ -f "$SKILL_DIR/skill.yaml" ]]; then
-        $CLAW_COMMAND skill install "$SKILL_DIR"
+        $CLAW_SKILL_CMD skill install "$SKILL_DIR"
         print_status "Skill installed successfully"
     else
         print_error "Skill definition not found at $SKILL_DIR/skill.yaml"
@@ -316,7 +327,7 @@ test_installation() {
     
     # Test sensor reading
     print_status "Testing sensor reading..."
-    if $CLAW_COMMAND skill test $SKILL_NAME --action read_sensor; then
+    if $CLAW_SKILL_CMD skill test $SKILL_NAME --action read_sensor; then
         print_status "Sensor reading test passed"
     else
         print_warning "Sensor reading test failed - check sensor connection"
@@ -328,7 +339,7 @@ test_installation() {
     
     if [[ $send_test == "y" || $send_test == "Y" ]]; then
         print_status "Sending test notification..."
-        if $CLAW_COMMAND skill run $SKILL_NAME --action test_notifications; then
+        if $CLAW_SKILL_CMD skill run $SKILL_NAME --action test_notifications; then
             print_status "Test notification sent successfully"
         else
             print_warning "Test notification failed - check configuration"
@@ -340,17 +351,17 @@ test_installation() {
 enable_monitoring() {
     print_step "Enabling temperature monitoring..."
     
-    $CLAW_COMMAND skill enable $SKILL_NAME
+    $CLAW_SKILL_CMD skill enable $SKILL_NAME
     print_status "Temperature monitoring enabled"
     
     echo
     print_status "Setup complete! Temperature monitoring is now active."
     echo
     echo "Useful commands:"
-    echo "  $CLAW_COMMAND skill status $SKILL_NAME     # Check status"
-    echo "  $CLAW_COMMAND skill logs $SKILL_NAME       # View logs"  
-    echo "  $CLAW_COMMAND skill config $SKILL_NAME     # Edit config"
-    echo "  $CLAW_COMMAND skill test $SKILL_NAME       # Run tests"
+    echo "  $CLAW_SKILL_CMD skill status $SKILL_NAME     # Check status"
+    echo "  $CLAW_SKILL_CMD skill logs $SKILL_NAME       # View logs"  
+    echo "  $CLAW_SKILL_CMD skill config $SKILL_NAME     # Edit config"
+    echo "  $CLAW_SKILL_CMD skill test $SKILL_NAME       # Run tests"
     echo
 }
 
@@ -360,6 +371,8 @@ main() {
     local DETECTED_SENSORS=()
     local SELECTED_SENSOR=""
     local CLAW_COMMAND=""
+    local CLAW_SKILL_CMD=""
+    local SENSOR_TYPE="DS18B20"
     
     check_system
     check_dependencies
